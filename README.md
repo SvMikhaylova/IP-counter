@@ -26,3 +26,11 @@ and store in each element a boolean value, indicating if we already had this num
 because it allocates this huge array at the beginning regardless how many IP addresses it really needs to handle.
 
     70Gb test file: ~24min, 15Gb heap
+
+3. Looks like the memory overhead for these inner arrays is still too big.
+
+    According to memory profiler boolean[32] takes 48 byte, but the size of really valuable information there
+is 1 bit per each boolean, i.e. 4 byte. It means we can use Int instead of boolean array, and each bit will play the same role
+as a separate boolean value before.
+
+   70Gb test file: ~15min, 1.5Gb heap
