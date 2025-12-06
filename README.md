@@ -34,3 +34,9 @@ is 1 bit per each boolean, i.e. 4 byte. It means we can use Int instead of boole
 as a separate boolean value before.
 
    70Gb test file: ~15min, 1.5Gb heap
+4. Time to focus on the line's processing.
+
+    Split using regex seems to be unnecessary complicated way since line's structure is easy. Besides, it allocates
+additional String objects. To avoid this and speed up processing we can parse IP from string manually.
+
+   70Gb test file: ~5.5min, 1Gb heap

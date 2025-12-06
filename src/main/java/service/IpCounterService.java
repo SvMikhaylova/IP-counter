@@ -24,7 +24,6 @@ public class IpCounterService {
 
     public long countDistinctIpAddressesOptimized(String name) {
         try (BufferedReader reader = new BufferedReader(new FileReader(name))) {
-            LocalDateTime time1 = LocalDateTime.now();
             var elemSize = 32;
             var array = new int[Integer.MAX_VALUE/elemSize * 2 + 1];
             AtomicLong count = new AtomicLong(0);
@@ -38,18 +37,32 @@ public class IpCounterService {
                     count.getAndIncrement();
                 }
             });
-            System.out.println("Array: " + count);
-            LocalDateTime time2 = LocalDateTime.now();
-            System.out.println(Duration.between(time1, time2).toMillis());
             return count.longValue();
         } catch (IOException e){
             return -1;
         }
     }
 
-    private int parseIpToInt(String ip) {
-        var splitted = ip.split("\\.");
-        return (Integer.parseInt(splitted[0]) << 24) | (Integer.parseInt(splitted[1]) << 16) |
-                (Integer.parseInt(splitted[2]) << 8) | Integer.parseInt(splitted[3]);
+    private int parseIpToInt(String line) {
+        int a = 0, b = 0, c = 0, d = 0;
+        int num = 0;
+        int part = 0;
+
+        for (int i = 0, n = line.length(); i < n; i++) {
+            char ch = line.charAt(i);
+            if (ch == '.') {
+                switch (part) {
+                    case 0: a = num; break;
+                    case 1: b = num; break;
+                    case 2: c = num; break;
+                }
+                num = 0;
+                part++;
+            } else {
+                num = num * 10 + (ch - '0');
+            }
+        }
+        d = num;
+        return (a << 24) | (b << 16) | (c << 8) | d;
     }
 }
