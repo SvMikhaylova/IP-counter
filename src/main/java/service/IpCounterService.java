@@ -18,6 +18,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 public class IpCounterService {
 
@@ -35,7 +36,7 @@ public class IpCounterService {
     public long countDistinctIpAddressesOptimized(String filePath, int workersNum) {
         var bitset = new AtomicIntegerArray(1 << 27);
         var path = Paths.get(filePath);
-        AtomicLong count = new AtomicLong(0);
+        LongAdder counter = new LongAdder();
 
         List<Chunk> chunks;
         try {
@@ -47,18 +48,18 @@ public class IpCounterService {
         try (ExecutorService pool = Executors.newFixedThreadPool(workersNum)) {
             List<Future<?>> futures = new ArrayList<>(chunks.size());
             for (Chunk chunk : chunks) {
-                futures.add(pool.submit(() -> processChunk(path, chunk, bitset, count)));
+                futures.add(pool.submit(() -> processChunk(path, chunk, bitset, counter)));
             }
             // wait and propagate exceptions
             for (Future<?> f : futures) f.get();
         } catch (Exception e) {
             throw new RuntimeException("File processing failed", e);
         }
-        return count.longValue();
+        return counter.sum();
     }
 
     private void processChunk(Path path, Chunk chunk, AtomicIntegerArray bitset,
-                                    AtomicLong count) {
+                              LongAdder counter) {
         try (FileChannel fileChannel = FileChannel.open(path, StandardOpenOption.READ)) {
 
             final int BUFFER_SIZE = 1 << 18;  // 64 KB
@@ -105,7 +106,7 @@ public class IpCounterService {
                     if (chb == '\n' || chb == '\r') {
                         if (part == 3) {
                             int ip = (a << 24) | (b << 16) | (c << 8) | d;
-                            setBitAndCount(bitset, count, ip);
+                            setBitAndCount(bitset, counter, ip);
                         }
                         a = b = c = d = 0;
                         part = 0;
@@ -124,7 +125,7 @@ public class IpCounterService {
             // FINAL FLUSH (last line without newline)
             if (part == 3) {
                 int ip = (a << 24) | (b << 16) | (c << 8) | d;
-                setBitAndCount(bitset, count, ip);
+                setBitAndCount(bitset, counter, ip);
             }
         } catch (Throwable t) {
             throw new RuntimeException("File processing failed: chunk " + chunk, t);
@@ -133,7 +134,7 @@ public class IpCounterService {
 
     private void setBitAndCount(
             AtomicIntegerArray bitset,
-            AtomicLong count,
+            LongAdder counter,
             int ip
     ) {
         int index = ip >>> 5;     // / 32
@@ -147,7 +148,7 @@ public class IpCounterService {
 
             int newValue = current | bitMask;
             if (bitset.compareAndSet(index, current, newValue)) {
-                count.getAndIncrement();
+                counter.increment();
                 return;
             }
             // retry on CAS failure

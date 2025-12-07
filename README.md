@@ -46,9 +46,16 @@ additional String objects. To avoid this and speed up processing we can parse IP
 File can be read by FileChannel and parsed from bytes manually.
 
    70Gb test file: 222034ms ~3.7min, 500Mb heap
+
 6. Finally, the processing could be parallelized.
 
     It will require using AtomicIntegerArray instead of int[] to make it thread-safe 
 and not to block the whole array while one int is getting updated.
 
    70Gb test file: 123122ms ~2.05min, 500Mb heap
+
+7. Only one thing remains: counter is used by all threads and might slow down the execution significantly.
+LongAdder can be used instead of AtomicLong, since it is designed to address exactly this issue and 
+contains separate cells in order to reduce the frequency of contention.
+
+   70Gb test file: 69300ms ~1.15min, 500Mb heap
