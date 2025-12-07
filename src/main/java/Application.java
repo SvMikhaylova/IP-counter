@@ -8,8 +8,9 @@ public class Application {
     public static void main(String[] args) {
         var service = new IpCounterService();
         var filePath = args[0];
+        int workers = Runtime.getRuntime().availableProcessors();
         LocalDateTime time1 = LocalDateTime.now();
-        var count = service.countDistinctIpAddressesOptimized(filePath);
+        var count = service.countDistinctIpAddressesOptimized(filePath, workers);
         System.out.println("Count: " + count);
         LocalDateTime time2 = LocalDateTime.now();
         System.out.println("Processing time: " + Duration.between(time1, time2).toMillis());

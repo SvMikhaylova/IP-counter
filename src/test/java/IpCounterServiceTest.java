@@ -6,7 +6,7 @@ public class IpCounterServiceTest {
 
     @Test
     public void testIpCounter() {
-        var count = new IpCounterService().countDistinctIpAddressesOptimized("./src/test/resources/test_ip");
+        var count = new IpCounterService().countDistinctIpAddressesOptimized("./src/test/resources/test_ip", 1);
         Assertions.assertEquals(21, count);
     }
 }

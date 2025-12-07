@@ -5,11 +5,18 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class IpCounterService {
@@ -25,22 +32,40 @@ public class IpCounterService {
         }
     }
 
-    public long countDistinctIpAddressesOptimized(String name) {
-        var bitset = new int[1 << 27];
+    public long countDistinctIpAddressesOptimized(String filePath, int workersNum) {
+        var bitset = new AtomicIntegerArray(1 << 27);
+        var path = Paths.get(filePath);
         AtomicLong count = new AtomicLong(0);
-        processFile(Paths.get(name), bitset, count);
+
+        List<Chunk> chunks;
+        try {
+            chunks = splitIntoLineChunks(path, workersNum);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to split file into chunks", e);
+        }
+
+        try (ExecutorService pool = Executors.newFixedThreadPool(workersNum)) {
+            List<Future<?>> futures = new ArrayList<>(chunks.size());
+            for (Chunk chunk : chunks) {
+                futures.add(pool.submit(() -> processChunk(path, chunk, bitset, count)));
+            }
+            // wait and propagate exceptions
+            for (Future<?> f : futures) f.get();
+        } catch (Exception e) {
+            throw new RuntimeException("File processing failed", e);
+        }
         return count.longValue();
     }
 
-    private void processFile(Path path, int[] bitset,
+    private void processChunk(Path path, Chunk chunk, AtomicIntegerArray bitset,
                                     AtomicLong count) {
-        try (FileChannel ch = FileChannel.open(path, StandardOpenOption.READ)) {
+        try (FileChannel fileChannel = FileChannel.open(path, StandardOpenOption.READ)) {
 
             final int BUFFER_SIZE = 1 << 18;  // 64 KB
             ByteBuffer buf = ByteBuffer.allocateDirect(BUFFER_SIZE);
 
-            long pos = 0;
-            long remaining = ch.size();
+            long pos = chunk.start();
+            long remaining = chunk.end() - chunk.start();
 
             int a = 0, b = 0, c = 0, d = 0;
             int part = 0; // which octet 0..3
@@ -51,7 +76,7 @@ public class IpCounterService {
                 buf.clear();
                 buf.limit(readSize);
 
-                int n = ch.read(buf, pos);
+                int n = fileChannel.read(buf, pos);
                 if (n == -1) break;
                 buf.flip();
 
@@ -102,12 +127,12 @@ public class IpCounterService {
                 setBitAndCount(bitset, count, ip);
             }
         } catch (Throwable t) {
-            throw new RuntimeException("File processing failed", t);
+            throw new RuntimeException("File processing failed: chunk " + chunk, t);
         }
     }
 
-    private static void setBitAndCount(
-            int[] bitset,
+    private void setBitAndCount(
+            AtomicIntegerArray bitset,
             AtomicLong count,
             int ip
     ) {
@@ -115,9 +140,65 @@ public class IpCounterService {
         int bit = ip & 31;      // % 32
         int bitMask = 1 << bit;
 
-        if ((bitset[index] & bitMask) == 0) {
-            bitset[index] = bitset[index] | bitMask;
-            count.getAndIncrement();
+        while (true) {
+            int current = bitset.get(index);
+            if ((current & bitMask) != 0)
+                return; // already counted
+
+            int newValue = current | bitMask;
+            if (bitset.compareAndSet(index, current, newValue)) {
+                count.getAndIncrement();
+                return;
+            }
+            // retry on CAS failure
         }
+    }
+
+    // find newline-forward from pos (inclusive) returning position of byte AFTER newline
+    private long findNextNewline(FileChannel ch, long pos, long fileSize) throws IOException {
+        long p = pos;
+        ByteBuffer buf = ByteBuffer.allocate(32);
+        while (p < fileSize) {
+            buf.clear();
+            int toRead = (int)Math.min(buf.capacity(), fileSize - p);
+            ch.position(p);
+            int r = ch.read(buf.limit(toRead));
+            if (r <= 0) return fileSize;
+            buf.flip();
+            for (int i = 0; i < r; i++) {
+                byte newLine = (byte) '\n';
+                if (buf.get() == newLine) {
+                    return p + i + 1; // position after newline
+                }
+            }
+            p += r;
+        }
+        return fileSize;
+    }
+
+    private List<Chunk> splitIntoLineChunks(Path path, int workers) throws IOException {
+        long size = Files.size(path);
+        long approx = size / workers;
+        List<Chunk> chunks = new ArrayList<>(workers);
+
+        try (FileChannel ch = FileChannel.open(path, StandardOpenOption.READ)) {
+            long start = 0;
+            for (int i = 0; i < workers; i++) {
+                long rawEnd = (i == workers - 1) ? size : Math.min(size, start + approx);
+                long end;
+
+                if (rawEnd == size) {
+                    end = size;
+                } else {
+                    // find newline at or after rawEnd
+                    end = findNextNewline(ch, rawEnd, size);
+                }
+
+                chunks.add(new Chunk(start, end));
+                start = end;
+            }
+        }
+
+        return chunks;
     }
 }
