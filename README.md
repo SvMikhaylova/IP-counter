@@ -59,3 +59,22 @@ LongAdder can be used instead of AtomicLong, since it is designed to address exa
 contains separate cells in order to reduce the frequency of contention.
 
    70Gb test file: 69300ms ~1.15min, 500Mb heap
+
+8. The CAS spin loop in setBitAndCount can be replaced with a single `VarHandle.getAndBitwiseOr` call —
+a native fetch-and-OR instruction that atomically sets the bit and returns the old value with no retry loop.
+`AtomicIntegerArray` is replaced with a plain `int[]` accessed through the VarHandle.
+
+   70Gb test file: 71316ms ~1.19min, 500Mb heap
+
+   No measurable improvement. CAS contention was already low because the 134M-element bitset makes
+   collisions between threads rare, so the spin loop almost never retried in practice.
+
+9. The LongAdder counter can be removed from the hot path entirely. Instead of incrementing an atomic
+counter per unique IP, all threads just set bits in the shared bitset. Once all threads finish, a single
+sequential pass over the 512Mb array sums `Integer.bitCount` to get the final count.
+
+   70Gb test file: 71256ms ~1.19min, 500Mb heap
+
+   Again no measurable improvement. The LongAdder was not a bottleneck — I/O throughput dominates.
+   The tradeoff: a fast ~100ms final pass instead of an atomic op per unique IP. Worth keeping as a
+   simplification (no LongAdder parameter to thread through).
