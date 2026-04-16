@@ -3,6 +3,8 @@ package service;
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -16,11 +18,11 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.LongAdder;
 
 public class IpCounterService {
+
+    private static final VarHandle INT_ARRAY_VH = MethodHandles.arrayElementVarHandle(int[].class);
 
     public int countDistinctIpAddressesNaive(String name) {
         try (BufferedReader reader = new BufferedReader(new FileReader(name))) {
@@ -34,9 +36,8 @@ public class IpCounterService {
     }
 
     public long countDistinctIpAddressesOptimized(String filePath, int workersNum) {
-        var bitset = new AtomicIntegerArray(1 << 27);
+        var bitset = new int[1 << 27];
         var path = Paths.get(filePath);
-        LongAdder counter = new LongAdder();
 
         List<Chunk> chunks;
         try {
@@ -48,18 +49,21 @@ public class IpCounterService {
         try (ExecutorService pool = Executors.newFixedThreadPool(workersNum)) {
             List<Future<?>> futures = new ArrayList<>(chunks.size());
             for (Chunk chunk : chunks) {
-                futures.add(pool.submit(() -> processChunk(path, chunk, bitset, counter)));
+                futures.add(pool.submit(() -> processChunk(path, chunk, bitset)));
             }
             // wait and propagate exceptions
             for (Future<?> f : futures) f.get();
         } catch (Exception e) {
             throw new RuntimeException("File processing failed", e);
         }
-        return counter.sum();
+
+        long count = 0;
+        for (int i = 0; i < bitset.length; i++)
+            count += Integer.bitCount(bitset[i]);
+        return count;
     }
 
-    private void processChunk(Path path, Chunk chunk, AtomicIntegerArray bitset,
-                              LongAdder counter) {
+    private void processChunk(Path path, Chunk chunk, int[] bitset) {
         try (FileChannel fileChannel = FileChannel.open(path, StandardOpenOption.READ)) {
 
             final int BUFFER_SIZE = 1 << 18;  // 64 KB
@@ -69,7 +73,7 @@ public class IpCounterService {
             long remaining = chunk.end() - chunk.start();
 
             int a = 0, b = 0, c = 0, d = 0;
-            int part = 0; // which octet 0..3
+            int part = 0;
 
             while (remaining > 0) {
                 int readSize = (int)Math.min(remaining, BUFFER_SIZE);
@@ -106,7 +110,7 @@ public class IpCounterService {
                     if (chb == '\n' || chb == '\r') {
                         if (part == 3) {
                             int ip = (a << 24) | (b << 16) | (c << 8) | d;
-                            setBitAndCount(bitset, counter, ip);
+                            setBit(bitset, ip);
                         }
                         a = b = c = d = 0;
                         part = 0;
@@ -125,34 +129,17 @@ public class IpCounterService {
             // FINAL FLUSH (last line without newline)
             if (part == 3) {
                 int ip = (a << 24) | (b << 16) | (c << 8) | d;
-                setBitAndCount(bitset, counter, ip);
+                setBit(bitset, ip);
             }
         } catch (Throwable t) {
             throw new RuntimeException("File processing failed: chunk " + chunk, t);
         }
     }
 
-    private void setBitAndCount(
-            AtomicIntegerArray bitset,
-            LongAdder counter,
-            int ip
-    ) {
-        int index = ip >>> 5;     // / 32
-        int bit = ip & 31;      // % 32
-        int bitMask = 1 << bit;
-
-        while (true) {
-            int current = bitset.get(index);
-            if ((current & bitMask) != 0)
-                return; // already counted
-
-            int newValue = current | bitMask;
-            if (bitset.compareAndSet(index, current, newValue)) {
-                counter.increment();
-                return;
-            }
-            // retry on CAS failure
-        }
+    private void setBit(int[] bitset, int ip) {
+        int index = ip >>> 5;
+        int bitMask = 1 << (ip & 31);
+        INT_ARRAY_VH.getAndBitwiseOr(bitset, index, bitMask);
     }
 
     // find newline-forward from pos (inclusive) returning position of byte AFTER newline
